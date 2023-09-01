@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="b7e0c392-f942-431a-8be5-c1b864fae9b9" name="shikra">
+        <fileTransfer rootFolder="/home/pirenjie/shikra" accessType="SFTP" host="36.111.143.253" port="22" sshConfigId="79c6e3fd-6878-4f0d-96bf-589cf168d13d" sshConfig="pirenjie@36.111.143.253:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
