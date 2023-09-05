@@ -17,7 +17,8 @@ from PIL import Image
 # train_paths=[o["img_path"] for o in objects_train]
 # test_paths=[o["img_path"] for o in objects_test]
 # uniqe_test = list(set(test_paths).difference(train_paths))
-with open("/home/pirenjie/data/refcoco/shikra_mask/anns/refcocog/train_mask.jsonl", "r") as f:
+# with open("/home/pirenjie/shikra/data/RES_refcocog_umd_test.jsonl", "r") as f:
+with open("/home/pirenjie/data/refcoco/shikra_mask/anns/refcocog/RES_refcocog_unc_val.jsonl", "r") as f:
     objects1= list(f)
 # mask_path = "/home/pirenjie/data/refcoco/shikra_mask/masks/refcoco/5911.png"
 # mask = Image.open(mask_path).convert("L")

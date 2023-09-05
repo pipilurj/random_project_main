@@ -18,7 +18,7 @@
   "<image> Generate a segmentation mask that emphasizes the presence of <expr> in the image.",
   "<image> Is it possible to obtain a segmentation mask specifically focusing on <expr> in the image?",
   "<image> I'm looking for a segmentation mask that accurately identifies the region containing <expr> in the image.",
-  "<image> <image> Please generate a segmentation mask that highlights the precise location of <expr> in the image.",
+  "<image> Please generate a segmentation mask that highlights the precise location of <expr> in the image.",
   "<image> I need a segmentation mask that isolates and labels the area corresponding to <expr> in the image.",
   "<image> Could you create a segmentation mask that precisely outlines the region where <expr> appears in the image?",
   "<image> Please create a segmentation mask that accurately captures the spatial extent of <expr> in the image.",

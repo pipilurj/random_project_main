@@ -5,6 +5,7 @@ from transformers.trainer import DataCollator
 
 from .shikra import ShikraTrainer
 from .shikra2 import ShikraTrainer2
+from .shikra_mask import ShikraTrainerMask
 from .shikra_continuous import ShikraTrainerContinuous
 from .base_engine import TrainerForMMLLM, Seq2Seq2DataCollatorWithImage
 
@@ -12,7 +13,7 @@ TYPE2TRAINER = {
     'shikra': ShikraTrainer,
     'shikra2': ShikraTrainer2,
     'shikra3': ShikraTrainer2,
-    'shikra_mask': ShikraTrainer2,
+    'shikra_mask': ShikraTrainerMask,
     "shikra_detr": ShikraTrainer2,
     "shikra_continuous": ShikraTrainerContinuous,
 }

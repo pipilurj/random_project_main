@@ -9,7 +9,7 @@ from transformers import LlamaConfig, LlamaModel, LlamaForCausalLM, CLIPVisionMo
 import torch.nn.functional as F
 import torchvision
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from mllm.models.utils.modeling_outputs import CausalLMOutputWithPastCustom, GreedySearchDecoderOnlyOutputContinuous
+from mllm.models.utils.modeling_outputs import CausalLMOutputWithPastCustom, GreedySearchDecoderOnlyOutputCustom
 from mllm.utils.box_utils import bbox_losses
 from transformers.models.llama.modeling_llama import _expand_mask
 from torchvision.ops.boxes import box_area, box_convert
@@ -682,7 +682,7 @@ class ShikraLlamaForCausalContinous(LlamaForCausalLM):
                     this_peer_finished = True
 
         if return_dict_in_generate:
-            return GreedySearchDecoderOnlyOutputContinuous(
+            return GreedySearchDecoderOnlyOutputCustom(
                 sequences=input_ids,
                 scores=scores,
                 attentions=decoder_attentions,

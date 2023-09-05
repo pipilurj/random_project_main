@@ -5,22 +5,23 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss
-import re
 from transformers import LlamaConfig, LlamaModel, LlamaForCausalLM, CLIPVisionModel, CLIPImageProcessor
 import torch.nn.functional as F
-import torchvision
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from mllm.models.utils.modeling_outputs import CausalLMOutputWithPastCustom
-from mllm.utils.box_utils import bbox_losses
-from transformers.models.llama.modeling_llama import _expand_mask
-from torchvision.ops.boxes import box_area, box_convert
-import itertools
+from mllm.models.utils.modeling_outputs import CausalLMOutputWithPastCustom, GreedySearchDecoderOnlyOutputCustom
 import matplotlib.patches as patches
-from mllm.models.autoencoder.model.transformer_mask import TransformerMask
 from mllm.models.autoencoder.model.resnet import ResNet50
 from mllm.utils.dice_loss import dice_loss
-import matplotlib.pyplot as plt
-from .detr_transformer import Transformer
+from transformers.generation.logits_process import (
+    LogitsProcessorList,
+    MinLengthLogitsProcessor,
+)
+from transformers.generation.utils import (
+    GreedySearchEncoderDecoderOutput,
+    GreedySearchDecoderOnlyOutput,
+    StoppingCriteriaList
+)
+import torch.distributed as dist
 import matplotlib.pyplot as plt
 from mllm.dataset.root import (
     OBJ_TEXT_START,
@@ -70,70 +71,6 @@ def plot_images(real, gen, noise, coord_gt, coord_pred, save_path="", imgid=0):
     plt.savefig(os.path.join(save_path, f"masks_{imgid}.png"), dpi=300)  # Change the filename and format as desired
     plt.close()
 
-def xywh2xyxy(x):
-    x_c, y_c, w, h = x.unbind(-1)
-    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
-         (x_c + 0.5 * w), (y_c + 0.5 * h)]
-    return torch.stack(b, dim=-1)
-
-
-def loc_to_coords(loc, num_locations):
-    match = re.search(r"<bin_(\d+)>", loc)
-    token_num = float(match.group(1))
-    xc, yc = token_num - math.floor((token_num - 1e-3) / num_locations) * num_locations, math.ceil(
-        token_num / num_locations)
-    xc_coord, yc_coord = (xc - 0.5) * 1 / num_locations, (yc - 0.5) * 1 / num_locations
-    return xc_coord, yc_coord
-
-
-def box_loc_to_offsets(box, loc, num_locations):
-    xc_coord, yc_coord = loc_to_coords(loc, num_locations)
-    x1_off, y1_off, x2_off, y2_off = xc_coord - box[0], yc_coord - box[1], box[2] - xc_coord, box[3] - yc_coord
-    return [x1_off, y1_off, x2_off, y2_off]
-
-
-def loc_offsets_to_bbox(loc, offsets, num_locations):
-    xc_coord, yc_coord = loc_to_coords(loc, num_locations)
-    x1, y1, x2, y2 = xc_coord - offsets[0], yc_coord - offsets[1], xc_coord + offsets[2], yc_coord + offsets[3]
-    return [x1, y1, x2, y2]
-
-
-# def box_coord_to_offsets(box, coord):
-#     xc_coord, yc_coord = coord.unbind(-1)
-#     x1, y1, x2, y2 = box.unbind(-1)
-#     x1_off, y1_off, x2_off, y2_off = xc_coord - x1, yc_coord - y1, x2-xc_coord, y2-yc_coord
-#     offsets = [x1_off, y1_off,
-#          x2_off, y2_off]
-#     return torch.stack(offsets, dim=-1)
-#
-# def coord_offsets_to_bbox(coord, offsets):
-#     xc_coord, yc_coord = coord.unbind(-1)
-#     x1_off, y1_off, x2_off, y2_off = offsets.unbind(-1)
-#     boxes = [xc_coord-x1_off, yc_coord-y1_off,
-#              xc_coord+x2_off, yc_coord+ y2_off]
-#     return torch.stack(boxes, dim=-1)
-
-def box_coord_to_offsets(box, coord):
-    xc_coord, yc_coord = coord.unbind(-1)
-    x1, y1, x2, y2 = box.unbind(-1)
-    x1_off, y1_off, x2_off, y2_off = x1 - xc_coord, y1 - yc_coord, x2 - xc_coord, y2 - yc_coord
-    offsets = [x1_off, y1_off,
-               x2_off, y2_off]
-    return torch.stack(offsets, dim=-1)
-
-
-def coord_offsets_to_bbox(coord, offsets):
-    xc_coord, yc_coord = coord.unbind(-1)
-    x1_off, y1_off, x2_off, y2_off = offsets.unbind(-1)
-    boxes = [xc_coord + x1_off, yc_coord + y1_off,
-             xc_coord + x2_off, yc_coord + y2_off]
-    return torch.stack(boxes, dim=-1)
-
-
-def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corners=None):
-    # type: (Tensor, Optional[List[int]], Optional[float], str, Optional[bool]) -> Tensor
-    return torchvision.ops.misc.interpolate(input, size, scale_factor, mode, align_corners)
-
 
 class LayerNorm2d(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
@@ -167,58 +104,6 @@ class MLP(nn.Module):
             return F.sigmoid(x)
         else:
             return x
-
-
-class MaskHead(nn.Module):
-    def __init__(
-            self,
-            hidden_dim=256,
-            activation=nn.GELU,
-    ) -> None:
-        super().__init__()
-        self.hidden_dim = hidden_dim
-
-        self.output_upscaling = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dim, hidden_dim // 4, kernel_size=2, stride=2),
-            LayerNorm2d(hidden_dim // 4),
-            activation(),
-            nn.ConvTranspose2d(hidden_dim // 4, hidden_dim // 8, kernel_size=2, stride=2),
-            activation(),
-        )
-        self.query_mlp = MLP(hidden_dim, hidden_dim, hidden_dim // 8, 3)
-
-    def forward(
-            self,
-            query: torch.Tensor,
-            image_embeddings: torch.Tensor,
-    ):
-        masks = self.predict_masks(
-            image_embeddings,
-            query,
-        )
-        # Prepare output
-        return masks
-
-    def predict_masks(self, src, query):
-        bs, hw, c = src.shape
-        h, w = int(math.sqrt(hw)), int(math.sqrt(hw))
-        src_cat = torch.cat([s.unsqueeze(0).repeat(len(q), 1, 1) for s, q in zip(src, query)])
-        query_cat = torch.cat(query)
-        src_reshaped = src_cat.view(len(src), h, w, -1).permute(0, 3, 1, 2)
-        upscaled_embedding = self.output_upscaling(src_reshaped)
-        query_in = self.query_mlp(query_cat)
-        bs, c, h, w = upscaled_embedding.shape
-        masks = torch.einsum("bc,bcd->bd", query_in, upscaled_embedding.view(bs, c, h * w)).view(bs, -1, h, w)
-        return masks
-
-
-# def xywh_to_xyxy(box):
-#     # box: (x, y, w, h)
-#     x1 = max(0, box[0]-box[2]/2)
-#     y1 = max(0, box[1]-box[3]/2)
-#     x2 = min(1, box[0]+box[2]/2)
-#     y2 = min(1, box[1]+box[3]/2)
-#     return
 
 class ShikraConfig(LlamaConfig):
     model_type = "shikra"
@@ -411,7 +296,7 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
         # Initialize weights and apply final processing
         self.post_init()
         self.init_bbox_head(config)
-        # self.init_autoencoder(None)
+        self.init_autoencoder()
 
     def record_loc_token_id(self, tokenizer):
         self.tokenizer = tokenizer
@@ -427,33 +312,22 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
         self.img_dir = os.path.join(output_dir, "images")
         os.makedirs(self.img_dir, exist_ok=True)
 
-    def init_autoencoder(self, config):
+    def init_autoencoder(self):
+        self.autoencoder = ResNet50()
+        self.decoder_mapping = nn.Linear(4096, 4096)
+        self.encoder_mapping = nn.Linear(4096, 4096)
+
+    def load_autoencoder_pretrained(self, config):
         # TODO: write config, pretrained path, etc.
         print( f"pretrained {config.pretrained_autoencoder}")
         print( f"freeze autoencoder {config.freeze_autoencoder}")
         pretrained = config.pretrained_autoencoder
-
-        # self.autoencoder = TransformerMask(d_model=512,
-        #                                    max_len=200,
-        #                                    ffn_hidden=512,
-        #                                    n_head=8,
-        #                                    n_layers=6,
-        #                                    add_mapping=False,
-        #                                    num_bins=100,
-        #                                    mode="cls",
-        #                                    drop_prob=0.1,
-        #                                    share_loc_embed=True,
-        #                                    device="cuda")
-        self.autoencoder = ResNet50()
         if pretrained is not None:
             self.autoencoder.load_state_dict(torch.load(pretrained))
         if config.freeze_autoencoder:
             self.autoencoder.eval()
             for p in self.autoencoder.parameters():
                 p.requires_grad = False
-        self.decoder_mapping = nn.Linear(4096, 4096)
-        self.encoder_mapping = nn.Linear(4096, 4096)
-        # self.encoding_mapping = MLP(4096, 1024, 4096, 2)
 
     def get_model(self):
         return self.model
@@ -539,7 +413,7 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             loc_embedding_mapped=loc_embedding_mapped
         )
         hidden_states = outputs[0]
-        loss, loss_lm, bbox_loss = 0, 0, 0
+        loss, loss_lm, box_loss, mask_loss, l2_loss, recon_loss = 0, 0, 0, 0, 0, 0
         logits = self.lm_head(hidden_states)
 
         if labels is not None:
@@ -551,7 +425,7 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
             # input: <xxx><start><mask><end>;  target: <start><mask><end><xxx>
-            shift_labels[shift_labels == self.mask_token_ids] = -100
+            # shift_labels[shift_labels == self.mask_token_ids] = -100
             # shift_labels[shift_labels == self.obj_visual_end_id] = -100
             # Enable model/pipeleine parallelism
             shift_labels = shift_labels.to(shift_logits.device)
@@ -559,31 +433,23 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             # loss += loss_lm
             loss += loss_lm * self.lm_loss_weight
         if self.training:
-            pos_of_loc_tokens = torch.where(input_ids==self.obj_visual_start_id)
+            # pos_of_loc_tokens = torch.where(input_ids==self.obj_visual_start_id)
+            pos_of_loc_tokens = torch.where(input_ids==self.mask_token_ids)
             # loc_embeddings = self.encoding_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1]-1])
-            loc_embeddings = self.decoder_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1]])
+            loc_embeddings = self.decoder_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1] - 1])
             box_pred = self.bbox_head(loc_embeddings)
             boxes_seq = torch.tensor(boxes_seq).to(loc_embeddings.device).reshape(-1, 4)
             box_loss = self.box_loss(box_pred, boxes_seq) * self.box_loss_weight
             loss += box_loss
-
-            # mask_decoded = self.autoencoder(masks_seq.unsqueeze(dim=1))
             mask_decoded = self.autoencoder.generate(loc_embeddings, ifsigmoid=False)
-            # mask_loss = self.mask_loss(loc_embeddings,pretrained_embedding)
             recon_loss, l2_loss = self.mask_loss(mask_decoded, masks_seq, loc_embeddings, pretrained_loc_embedding)
             mask_loss = recon_loss * self.recon_loss_weight + l2_loss * self.l2_loss_weight
-            # mask_loss = recon_loss + l1_loss
-            # mask_loss = l1_loss
             loss += mask_loss
             if torch.distributed.is_initialized():
                 if torch.distributed.get_rank() == 0:
                     # with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     learnt_generation = self.autoencoder.generate(encoder_repr=loc_embeddings)
                     pretrained_generation = self.autoencoder.generate(encoder_repr=pretrained_loc_embedding)
-                    # pretrained_embedding_noise = pretrained_embedding + torch.rand_like(pretrained_embedding) * torch.sqrt(mask_loss)
-                    # pretrained_embedding_noise = pretrained_embedding + torch.rand_like(pretrained_embedding) * mask_loss
-                    # noise_loss = self.mask_loss(pretrained_embedding_noise, pretrained_embedding)
-                    # pretrained_generation_addednoise = self.autoencoder.generate(encoder_repr=pretrained_embedding_noise)
                     if hasattr(self, "imgid"):
                         self.imgid+=1
                     else:
@@ -610,6 +476,159 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             last_hidden_state=outputs.last_hidden_state,
             attentions=outputs.attentions,
         )
+
+    def greedy_search(
+            self,
+            input_ids: torch.LongTensor,
+            logits_processor=None,
+            stopping_criteria=None,
+            max_length: Optional[int] = None,
+            pad_token_id: Optional[int] = None,
+            eos_token_id: Optional[Union[int, List[int]]] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            output_scores: Optional[bool] = None,
+            return_dict_in_generate: Optional[bool] = None,
+            synced_gpus: Optional[bool] = False,
+            **model_kwargs,
+    ):
+        logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
+        stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
+        pad_token_id = pad_token_id if pad_token_id is not None else self.generation_config.pad_token_id
+        eos_token_id = eos_token_id if eos_token_id is not None else self.generation_config.eos_token_id
+        if isinstance(eos_token_id, int):
+            eos_token_id = [eos_token_id]
+        eos_token_id_tensor = torch.tensor(eos_token_id).to(input_ids.device) if eos_token_id is not None else None
+        output_scores = output_scores if output_scores is not None else self.generation_config.output_scores
+        output_attentions = (
+            output_attentions if output_attentions is not None else self.generation_config.output_attentions
+        )
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.generation_config.output_hidden_states
+        )
+        return_dict_in_generate = (
+            return_dict_in_generate
+            if return_dict_in_generate is not None
+            else self.generation_config.return_dict_in_generate
+        )
+
+        # init attention / hidden states / scores tuples
+        scores = () if (return_dict_in_generate and output_scores) else None
+        decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
+        cross_attentions = () if (return_dict_in_generate and output_attentions) else None
+        decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
+
+        # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
+        if return_dict_in_generate and self.config.is_encoder_decoder:
+            encoder_attentions = model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
+            encoder_hidden_states = (
+                model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
+            )
+
+        # keep track of which sequences are already finished
+        unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+
+        this_peer_finished = False  # used by synced_gpus only
+        boxes_seq, masks_seq, points_seq, loc_embeds = [[] for _ in range(len(input_ids))], [[] for _ in range(len(input_ids))], [[] for _ in range(len(input_ids))], [[] for _ in range(len(input_ids))]
+        while True:
+            if synced_gpus:
+                # Under synced_gpus the `forward` call must continue until all gpus complete their sequence.
+                # The following logic allows an early break if all peers finished generating their sequence
+                this_peer_finished_flag = torch.tensor(0.0 if this_peer_finished else 1.0).to(input_ids.device)
+                # send 0.0 if we finished, 1.0 otherwise
+                dist.all_reduce(this_peer_finished_flag, op=dist.ReduceOp.SUM)
+                # did all peers finish? the reduced sum will be 0.0 then
+                if this_peer_finished_flag.item() == 0.0:
+                    break
+
+            # prepare model inputs
+            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs.update({"boxes_seq": boxes_seq})
+            model_inputs.update({"masks_seq": masks_seq})
+            model_inputs.update({"points_seq": points_seq})
+            # forward pass to get next token
+            outputs = self(
+                **model_inputs,
+                return_dict=True,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+            )
+            last_hidden_state = outputs.last_hidden_state
+            if synced_gpus and this_peer_finished:
+                continue  # don't waste resources running the code we don't need
+
+            next_token_logits = outputs.logits[:, -1, :]
+
+            # pre-process distribution
+            next_tokens_scores = logits_processor(input_ids, next_token_logits)
+
+            # Store scores, attentions and hidden_states when required
+            if return_dict_in_generate:
+                if output_scores:
+                    scores += (next_tokens_scores,)
+                if output_attentions:
+                    decoder_attentions += (
+                        (outputs.decoder_attentions,) if self.config.is_encoder_decoder else (outputs.attentions,)
+                    )
+                    if self.config.is_encoder_decoder:
+                        cross_attentions += (outputs.cross_attentions,)
+
+                if output_hidden_states:
+                    decoder_hidden_states += (
+                        (outputs.decoder_hidden_states,)
+                        if self.config.is_encoder_decoder
+                        else (outputs.hidden_states,)
+                    )
+
+            # argmax
+            next_tokens = torch.argmax(next_tokens_scores, dim=-1)
+            # debug
+            for i, tok in enumerate(next_tokens):
+                if tok == self.mask_token_ids:
+                    loc_embeds[i].append(tok)
+                    pos_of_loc_tokens = torch.where(input_ids==self.mask_token_ids)
+                    # loc_embeddings = self.encoding_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1]-1])
+                    loc_embeddings = self.decoder_mapping(last_hidden_state[i, -1])
+                    masks_seq[i].append(self.autoencoder.generate(encoder_repr=loc_embeddings))
+                    boxes_seq[i].append(self.bbox_head(loc_embeddings))
+
+
+            # finished sentences should have their next token be a padding token
+            if eos_token_id is not None:
+                if pad_token_id is None:
+                    raise ValueError("If `eos_token_id` is defined, make sure that `pad_token_id` is defined.")
+                next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
+
+            # update generated ids, model inputs, and length for next step
+            input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
+            model_kwargs = self._update_model_kwargs_for_generation(
+                outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
+            )
+
+            # if eos_token was found in one sentence, set sentence to finished
+            if eos_token_id_tensor is not None:
+                unfinished_sequences = unfinished_sequences.mul(
+                    next_tokens.tile(eos_token_id_tensor.shape[0], 1).ne(eos_token_id_tensor.unsqueeze(1)).prod(dim=0)
+                )
+
+            # stop when each sentence is finished, or if we exceed the maximum length
+            if unfinished_sequences.max() == 0 or stopping_criteria(input_ids, scores):
+                if not synced_gpus:
+                    break
+                else:
+                    this_peer_finished = True
+
+        if return_dict_in_generate:
+            return GreedySearchDecoderOnlyOutputCustom(
+                sequences=input_ids,
+                scores=scores,
+                attentions=decoder_attentions,
+                hidden_states=decoder_hidden_states,
+                boxes_seq = boxes_seq,
+                masks_seq = masks_seq
+            )
+        else:
+            return input_ids, masks_seq, boxes_seq
 
     def prepare_inputs_for_generation(
             self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs

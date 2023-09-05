@@ -11,5 +11,4 @@ from .vcr import VCRDataset, VCRPredDataset
 from .vqav2 import VQAv2Dataset
 from .vqaex import VQAEXDataset
 from .pope import POPEVQADataset
-from .rec_ret import RECRETDataset
-from .ref_mask import REFMaskDataset
+from .ref_mask import REFMaskDataset, RECMaskComputeMetrics

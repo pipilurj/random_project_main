@@ -19,7 +19,7 @@ from ..utils import (
 from ..process_function import (
     BoxFormatter,
 )
-
+from mllm.utils.mask_utils import intersectionAndUnionGPU
 from ..root import (
     DATASETS,
     METRICS,
@@ -125,31 +125,16 @@ class RECMaskComputeMetrics(BaseComputeMetrics):
     def calculate_metric(self, preds: Sequence[str], targets: Sequence[str]) -> Dict[str, Any]:
         failed = 0
         target_failed = 0
-
-        pred_boxes, target_boxes = [], []
-        for pred, target in zip(preds, targets):
-            extract_pred = self.extract_ans(pred)
-            extract_target = self.extract_ans(target)
-            if extract_target is None:
-                target_failed += 1
-                logger.warning(f"failed to extract ans for target: {target}")
-                continue
-            if extract_pred is None:
-                failed += 1
-                logger.warning(f"failed to extract ans for pred: {pred}")
-                extract_pred = [0, 0, 0, 0]
-            target_boxes.append(extract_target)
-            pred_boxes.append(extract_pred)
-
+        pred_box, pred_mask, gt_boxes, gt_masks = preds["boxes_seq"], preds["masks_seq"], targets["boxes_seq"], targets["masks_seq"]
         with torch.no_grad():
-            target_boxes = torch.tensor(target_boxes)
-            pred_boxes = torch.tensor(pred_boxes)
+            pred_box, pred_mask, gt_boxes, gt_masks = pred_box.cuda(), pred_mask.cuda(), gt_boxes.cuda(), gt_masks.cuda()
             # normalized box value is too small, so that the area is 0.
-            ious = box_iou(pred_boxes * 1000, target_boxes * 1000)
-            ious = torch.einsum('i i -> i', ious)  # take diag elem
+            box_ious = box_iou(pred_box * 1000, gt_boxes * 1000)
+            box_ious = torch.einsum('i i -> i', box_ious)  # take diag elem
             # NOTE: please note iou only calculate for success target
-            iou = ious.mean().item()
-            correct = (ious > 0.5).sum().item()
+            box_ious = box_ious.mean().item()
+            box_correct = (box_ious > 0.5).sum().item()
+            mask_iou = intersectionAndUnionGPU(pred_mask, gt_masks, 2, ignore_index=0).mean().item()
 
         # HACK: currently we expand image to square. so this iou is the real iou.
         warn_message = "this iou is calculate on normalized box. just for non-rigorous training progress checking." \
@@ -157,23 +142,10 @@ class RECMaskComputeMetrics(BaseComputeMetrics):
         warnings.warn(warn_message)
 
         return {
-            'accuracy': 1.0 * correct / len(targets),
+            'accuracy_box': 1.0 * box_correct / len(targets),
+            'iou_mask': mask_iou,
             'target_failed': target_failed,
             'failed': failed,
-            'iou': iou,
+            'box_iou': box_ious,
             'warning': warn_message,
         }
-
-    def extract_ans(self, string: str):
-        try:
-            list_of_boxes = self.box_formatter.extract(string)
-            if len(list_of_boxes) != 1 or len(list_of_boxes[0]) != 1:
-                return None
-            box = list_of_boxes[0][0]
-            if len(box) != 4:
-                return None
-            return box
-        except Exception as e:
-            logger.warning(f"extract_ans for {string} but get exception: {e}")
-            return None
-

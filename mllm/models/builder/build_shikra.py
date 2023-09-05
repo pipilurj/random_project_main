@@ -119,8 +119,9 @@ def load_pretrained_shikra(model_args, training_args) -> Tuple[nn.Module, PREPRO
                                       device=training_args.device,
                                       tune_mm_mlp_adapter=model_args.tune_mm_mlp_adapter,
                                       pretrain_mm_mlp_adapter=model_args.pretrain_mm_mlp_adapter)
-    # initialize autoencoder (debug)
-    model.init_autoencoder(model_args) # set to bfloat16
+    # # initialize autoencoder (debug)
+    if model_args.pretrained_autoencoder is not None:
+        model.load_autoencoder_pretrained(model_args)
     model.get_autoencoder().to(dtype=dtype, device=training_args.device)
     # model.get_autoencoder().to(dtype=torch.float32, device=training_args.device)
     # set loss weights
