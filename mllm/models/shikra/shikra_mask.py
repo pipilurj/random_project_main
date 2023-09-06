@@ -9,7 +9,6 @@ from transformers import LlamaConfig, LlamaModel, LlamaForCausalLM, CLIPVisionMo
 import torch.nn.functional as F
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from mllm.models.utils.modeling_outputs import CausalLMOutputWithPastCustom, GreedySearchDecoderOnlyOutputCustom
-import matplotlib.patches as patches
 from mllm.models.autoencoder.model.resnet import ResNet50
 from mllm.utils.dice_loss import dice_loss
 from transformers.generation.logits_process import (
@@ -34,43 +33,6 @@ DEFAULT_IMAGE_PATCH_TOKEN = "<im_patch>"
 DEFAULT_IM_START_TOKEN = "<im_start>"
 DEFAULT_IM_END_TOKEN = "<im_end>"
 LOC_TOKENS = "<bin_{}>"
-
-def plot_images(real, gen, noise, coord_gt, coord_pred, save_path="", imgid=0):
-    w, h = real.shape
-    x1_gt, y1_gt, x2_gt, y2_gt = coord_gt[0]*w, coord_gt[1]*h, coord_gt[2]*w, coord_gt[3]*h
-    x1_pred, y1_pred, x2_pred, y2_pred = coord_pred[0]*w, coord_pred[1]*h, coord_pred[2]*w, coord_pred[3]*h
-    # Assuming you have three images in NumPy format: image1, image2, image3
-
-    # Create a figure with three subplots arranged horizontally
-    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-
-    # Display the first image in the first subplot
-    axs[0].imshow(real)
-    rect = patches.Rectangle((x1_gt, y1_gt), x2_gt - x1_gt, y2_gt - y1_gt, linewidth=2, edgecolor='r', facecolor='none')
-    # Add the rectangle patch to the axes
-    axs[0].add_patch(rect)
-    axs[0].set_title("real")
-    axs[0].axis('off')
-
-    # Display the second image in the second subplot
-    axs[1].imshow(gen)
-    axs[1].set_title("gen")
-    rect = patches.Rectangle((x1_pred, y1_pred), x2_pred - x1_pred, y2_pred - y1_pred, linewidth=2, edgecolor='r', facecolor='none')
-    axs[1].add_patch(rect)
-    axs[1].axis('off')
-
-    # Display the third image in the third subplot
-    axs[2].imshow(noise)
-    axs[2].set_title("noise")
-    axs[2].axis('off')
-
-    # Adjust the spacing between subplots
-    plt.tight_layout()
-
-    # Save the figure as an image file
-    plt.savefig(os.path.join(save_path, f"masks_{imgid}.png"), dpi=300)  # Change the filename and format as desired
-    plt.close()
-
 
 class LayerNorm2d(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
@@ -248,7 +210,7 @@ class ShikraLlamaModel(LlamaModel):
                                  cur_input_embeds[image_start_token_pos + num_patches + 1:]), dim=0)
                         cur_image_idx += 1
                     if loc_embedding is not None:
-                        cur_new_input_embeds[cur_input_ids==self.mask_token_ids] = loc_embedding
+                        cur_new_input_embeds[cur_input_ids==self.mask_token_ids] = loc_embedding.to(cur_new_input_embeds.dtype)
                     new_input_embeds.append(cur_new_input_embeds)
                 else:
                     cur_image_features = image_features[cur_image_idx]
@@ -272,7 +234,7 @@ class ShikraLlamaModel(LlamaModel):
                              cur_input_embeds[mask_index_start + num_patches:]),
                             dim=0)
                     if loc_embedding is not None:
-                        cur_new_input_embeds[cur_input_ids==self.mask_token_ids] = loc_embedding
+                        cur_new_input_embeds[cur_input_ids==self.mask_token_ids] = loc_embedding.to(cur_new_input_embeds.dtype)
                     new_input_embeds.append(cur_new_input_embeds)
 
             inputs_embeds = torch.stack(new_input_embeds, dim=0)
@@ -291,6 +253,8 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
     def __init__(self, config: ShikraConfig):
         super(LlamaForCausalLM, self).__init__(config)
         self.model = ShikraLlamaModel(config)
+        self.model.enable_input_require_grads()
+        self.model.gradient_checkpointing_enable()
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         # define bbox head and mask head
         # Initialize weights and apply final processing
@@ -389,16 +353,17 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             loc_embedding_mapped=None,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        device = next(self.parameters()).device
         masks_seq_batch = masks_seq
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        if self.training:
-            masks_seq = torch.cat([torch.cat([torch.cat([masks for masks in masks_seq]) for masks_seq in masks_seqs]) for masks_seqs in masks_seq_batch])
-            _, pretrained_loc_embedding = self.autoencoder(masks_seq.unsqueeze(dim=1), return_embedding=True)
-            loc_embedding_mapped = self.encoder_mapping(pretrained_loc_embedding)
+        # if self.training:
+        masks_seq = torch.cat([torch.cat([torch.cat([masks for masks in masks_seq]) for masks_seq in masks_seqs]) for masks_seqs in masks_seq_batch]).to(device)
+        _, pretrained_loc_embedding = self.autoencoder(masks_seq.unsqueeze(dim=1), return_embedding=True)
+        loc_embedding_mapped = self.encoder_mapping(pretrained_loc_embedding)
 
         outputs = self.model(
             input_ids=input_ids,
@@ -415,7 +380,7 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
         hidden_states = outputs[0]
         loss, loss_lm, box_loss, mask_loss, l2_loss, recon_loss = 0, 0, 0, 0, 0, 0
         logits = self.lm_head(hidden_states)
-
+        mask_decoded = None
         if labels is not None:
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
@@ -432,30 +397,19 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             loss_lm = loss_fct(shift_logits, shift_labels)
             # loss += loss_lm
             loss += loss_lm * self.lm_loss_weight
-        if self.training:
-            # pos_of_loc_tokens = torch.where(input_ids==self.obj_visual_start_id)
-            pos_of_loc_tokens = torch.where(input_ids==self.mask_token_ids)
-            # loc_embeddings = self.encoding_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1]-1])
-            loc_embeddings = self.decoder_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1] - 1])
-            box_pred = self.bbox_head(loc_embeddings)
-            boxes_seq = torch.tensor(boxes_seq).to(loc_embeddings.device).reshape(-1, 4)
-            box_loss = self.box_loss(box_pred, boxes_seq) * self.box_loss_weight
-            loss += box_loss
-            mask_decoded = self.autoencoder.generate(loc_embeddings, ifsigmoid=False)
-            recon_loss, l2_loss = self.mask_loss(mask_decoded, masks_seq, loc_embeddings, pretrained_loc_embedding)
-            mask_loss = recon_loss * self.recon_loss_weight + l2_loss * self.l2_loss_weight
-            loss += mask_loss
-            if torch.distributed.is_initialized():
-                if torch.distributed.get_rank() == 0:
-                    # with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                    learnt_generation = self.autoencoder.generate(encoder_repr=loc_embeddings)
-                    pretrained_generation = self.autoencoder.generate(encoder_repr=pretrained_loc_embedding)
-                    if hasattr(self, "imgid"):
-                        self.imgid+=1
-                    else:
-                        self.imgid=0
-                    plot_images(masks_seq[0].to(torch.float32).squeeze().detach().cpu().numpy(), learnt_generation[0].to(torch.float32).squeeze().detach().cpu().numpy(), pretrained_generation[0].to(torch.float32).squeeze().detach().cpu().numpy(), boxes_seq[0].to(torch.float32).squeeze().detach().cpu().numpy(), box_pred[0].to(torch.float32).squeeze().detach().cpu().numpy(), save_path=self.img_dir, imgid = self.imgid)
-                        # print(f"pred: {learnt_generation[0][0].flatten()} len {len(learnt_generation[0][0].flatten())} \n gt: {pretrained_generation[0][0].flatten()}  len {len(pretrained_generation[0][0].flatten())}\n gt with noise: {pretrained_generation_addednoise[0][0].flatten()} len {len(pretrained_generation_addednoise[0][0].flatten())} \n noise loss {noise_loss.item()}")
+        # if self.training:
+        # pos_of_loc_tokens = torch.where(input_ids==self.obj_visual_start_id)
+        pos_of_loc_tokens = torch.where(input_ids==self.mask_token_ids)
+        # loc_embeddings = self.encoding_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1]-1])
+        loc_embeddings = self.decoder_mapping(hidden_states[pos_of_loc_tokens[0], pos_of_loc_tokens[1] - 1])
+        box_pred = self.bbox_head(loc_embeddings)
+        boxes_seq = torch.tensor(boxes_seq).to(device).reshape(-1, 4)
+        box_loss = self.box_loss(box_pred, boxes_seq) * self.box_loss_weight
+        loss += box_loss
+        mask_decoded = self.autoencoder.generate(loc_embeddings, ifsigmoid=False)
+        recon_loss, l2_loss = self.mask_loss(mask_decoded, masks_seq, loc_embeddings, pretrained_loc_embedding)
+        mask_loss = recon_loss * self.recon_loss_weight + l2_loss * self.l2_loss_weight
+        loss += mask_loss
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -468,6 +422,8 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             loss_l2=l2_loss,
             loss_recon=recon_loss,
             loss_bbox=box_loss,
+            pred_masks=mask_decoded,
+            pred_boxes=box_pred,
             # loss_iou=iou_loss,
             logits=logits,
             # logits=None,

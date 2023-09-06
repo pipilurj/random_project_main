@@ -52,7 +52,8 @@ def prepare_data(
     )
     ds = {
         'train': conv_dataset_cls(dataset_generator=datasets['train'], mode='train') if datasets['train'] is not None else None,
-        'validation': conv_dataset_cls(dataset_generator=datasets['validation'], mode='validation') if datasets['validation'] is not None else None,
+        # 'validation': conv_dataset_cls(dataset_generator=datasets['validation'], mode='validation') if datasets['validation'] is not None else None,
+        'validation': conv_dataset_cls(dataset_generator=datasets['validation'], mode='train') if datasets['validation'] is not None else None,
         'test': conv_dataset_cls(dataset_generator=datasets['test'], mode='test') if datasets['test'] is not None else None,
     }
 

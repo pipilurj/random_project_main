@@ -22,6 +22,7 @@ training_args = dict(
     # train ddp
     tf32=True,
     bf16=True,
+    fp16=False,
     gradient_checkpointing=True,
     deepspeed="deepspeed/ds_config_zero2.json",
     # deepspeed="deepspeed/ds_config_zero2_offload.json",

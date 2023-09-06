@@ -16,6 +16,8 @@ class CausalLMOutputWithPastCustom(CausalLMOutputWithPast):
     loss_recon: Optional[torch.FloatTensor] = None
     loss_l2: Optional[torch.FloatTensor] = None
     last_hidden_state: Optional[torch.FloatTensor] = None
+    pred_masks: Optional[torch.FloatTensor] = None
+    pred_boxes: Optional[torch.FloatTensor] = None
 
 @dataclass
 class GreedySearchDecoderOnlyOutputCustom(ModelOutput):

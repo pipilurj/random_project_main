@@ -11,7 +11,7 @@ data_args = dict(
             # {{_base_.DEFAULT_TRAIN_DATASET.recvg}},
         ],
     ),
-    validation=None,
+    validation=_base_.DEFAULT_TRAIN_DATASET.rec_mask_subset,
     test=None,
 
     # compute_metric
@@ -32,6 +32,7 @@ data_args = dict(
 training_args = dict(
     save_steps=5000,
     num_train_epochs=1000,
+    do_eval=True,
     per_device_train_batch_size=8,
     lora_enable=False,
     output_dir='./exp/shikra3/{{fileBasenameNoExtension}}',
@@ -50,5 +51,10 @@ model_args = dict(
     lora_r = 32,
     lora_alpha = 32,
     lora_dropout = 0.1,
-    pretrained = "/home/pirenjie/transformer-master/saved/pixelmask_vae_lr5e-4_res128_avgpool-model.pt"
+    freeze_autoencoder=False,
+    pretrained_autoencoder = "/home/pirenjie/transformer-master/saved/pixelmask_resnet_dist0.01_noise0.01_triplet1-model.pt",
+    lm_loss_weight = 1.,
+    recon_loss_weight = 1.,
+    box_loss_weight = 1.,
+    l2_loss_weight = 0.,
 )

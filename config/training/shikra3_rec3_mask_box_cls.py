@@ -34,6 +34,7 @@ training_args = dict(
     num_train_epochs=25,
     per_device_train_batch_size=8,
     lora_enable=False,
+    do_eval=True,
     output_dir='./exp/shikra3/{{fileBasenameNoExtension}}',
 )
 

@@ -11,7 +11,7 @@ data_args = dict(
             # {{_base_.DEFAULT_TRAIN_DATASET.recvg}},
         ],
     ),
-    validation=None,
+    validation=_base_.DEFAULT_TRAIN_DATASET.rec_mask_subset,
     test=None,
 
     # compute_metric
@@ -30,8 +30,10 @@ data_args = dict(
     ),
 )
 training_args = dict(
-    save_steps=50000,
-    num_train_epochs=10,
+    save_steps=5000,
+    num_train_epochs=1000,
+    # do_eval=True,
+    logging_steps=1,
     per_device_train_batch_size=8,
     lora_enable=False,
     output_dir='./exp/shikra3/{{fileBasenameNoExtension}}',

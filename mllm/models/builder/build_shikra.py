@@ -97,7 +97,7 @@ def load_pretrained_shikra(model_args, training_args) -> Tuple[nn.Module, PREPRO
         dtype = torch.float16
     if training_args.bf16:
         dtype = torch.bfloat16
-    model.model.get_vision_tower().to(dtype=dtype, device=training_args.device)
+    # model.model.get_vision_tower().to(dtype=dtype, device=training_args.device)
     print("here")
     vision_config = model_vision_dict['vision_config']
 
@@ -122,7 +122,7 @@ def load_pretrained_shikra(model_args, training_args) -> Tuple[nn.Module, PREPRO
     # # initialize autoencoder (debug)
     if model_args.pretrained_autoencoder is not None:
         model.load_autoencoder_pretrained(model_args)
-    model.get_autoencoder().to(dtype=dtype, device=training_args.device)
+    # model.get_autoencoder().to(dtype=dtype, device=training_args.device)
     # model.get_autoencoder().to(dtype=torch.float32, device=training_args.device)
     # set loss weights
     model.set_loss_weights(model_args)
