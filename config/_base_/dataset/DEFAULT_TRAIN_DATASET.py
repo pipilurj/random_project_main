@@ -44,7 +44,7 @@ DEFAULT_TRAIN_DATASET = dict(
         mask_dir="/home/pirenjie/data/refcoco/shikra_mask/masks",
         filename=r'/home/pirenjie/data/refcoco/shikra_mask/anns/train_mask_merged.jsonl',
         image_folder=r'/home/pirenjie/data/refcoco/images/train2014',
-        template_file=r'{{fileDirname}}/template/REC_img_exp.json',
+        template_file=r'{{fileDirname}}/template/RES.json',
     ),
     rec_mask=dict(
         type='REFMaskDataset',
@@ -59,7 +59,7 @@ DEFAULT_TRAIN_DATASET = dict(
         mask_dir="/home/pirenjie/data/refcoco/shikra_mask/masks",
         filename=r'/home/pirenjie/data/refcoco/shikra_mask/anns/refcocog/train_mask_subset.jsonl',
         image_folder=r'/home/pirenjie/data/refcoco/images/train2014',
-        template_file=r'{{fileDirname}}/template/REC_img_exp.json',
+        template_file=r'{{fileDirname}}/template/RES.json',
     ),
     recvg=dict(
         type='RECDataset',

@@ -1,6 +1,6 @@
 import json
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"]="7"
+# os.environ["CUDA_VISIBLE_DEVICES"]="0"
 import sys
 import logging
 import pathlib
@@ -58,7 +58,7 @@ import os
 # os.environ["CUDA_VISIBLE_DEVICES"]='7'
 
 
-def plot_images(real, gen, coord_gt, coord_pred, save_path="", imgid=0):
+def plot_images(real, gen, coord_gt, coord_pred, mask_pred_gt=None, save_path="", imgid=0):
     os.makedirs(save_path, exist_ok=True)
     w, h = real.shape
     x1_gt, y1_gt, x2_gt, y2_gt = coord_gt[0] * w, coord_gt[1] * h, coord_gt[2] * w, coord_gt[3] * h
@@ -66,10 +66,13 @@ def plot_images(real, gen, coord_gt, coord_pred, save_path="", imgid=0):
     # Assuming you have three images in NumPy format: image1, image2, image3
 
     # Create a figure with three subplots arranged horizontally
-    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+    if mask_pred_gt is not None:
+        fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+    else:
+        fig, axs = plt.subplots(1, 2, figsize=(8, 4))
 
     # Display the first image in the first subplot
-    axs[0].imshow(real)
+    axs[0].imshow(real, cmap='gray')
     rect = patches.Rectangle((x1_gt, y1_gt), x2_gt - x1_gt, y2_gt - y1_gt, linewidth=2, edgecolor='r', facecolor='none')
     # Add the rectangle patch to the axes
     axs[0].add_patch(rect)
@@ -77,12 +80,17 @@ def plot_images(real, gen, coord_gt, coord_pred, save_path="", imgid=0):
     axs[0].axis('off')
 
     # Display the second image in the second subplot
-    axs[1].imshow(gen)
+    axs[1].imshow(gen, cmap='gray')
     axs[1].set_title("gen")
     rect = patches.Rectangle((x1_pred, y1_pred), x2_pred - x1_pred, y2_pred - y1_pred, linewidth=2, edgecolor='r',
                              facecolor='none')
     axs[1].add_patch(rect)
     axs[1].axis('off')
+
+    if mask_pred_gt is not None:
+        axs[2].imshow(mask_pred_gt, cmap='gray')
+        axs[2].set_title("gen_gt")
+        axs[2].axis('off')
 
     # Adjust the spacing between subplots
     plt.tight_layout()
@@ -149,10 +157,10 @@ def train(
         optimizer,
         total_epochs,
         total_global_steps,
-        curr_global_steps,
         start_time
 ):
     """Main training loop."""
+    global curr_global_steps
     total_time = AverageMeter("Time", ":6.3f")
     data_time = AverageMeter("Data", ":6.3f")
     losses = AverageMeter("Loss", ":.4f")
@@ -177,7 +185,6 @@ def train(
     )
 
     # switch to train mode
-    model.train()
     end = time.time()
     dtype = torch.float32
     if args.fp16:
@@ -185,12 +192,17 @@ def train(
     if args.bf16:
         dtype = torch.bfloat16
     for step, input_dict in enumerate(train_loader):
-
+        model.train()
         input_dict = dict_to_cuda(input_dict)
 
         # input_dict["images"] = input_dict["images"].to(dtype)
         with torch.cuda.amp.autocast(dtype=dtype):
             output_dict = model(**input_dict)
+            masks_list = input_dict["masks_seq"]
+            masks_list = torch.cat(
+                [torch.cat([torch.cat([masks for masks in masks_seq]) for masks_seq in masks_seqs]) for masks_seqs in
+                 masks_list]).cuda()
+            mask_decode_gt = model.module.autoencoder(masks_list.unsqueeze(dim=1)).sigmoid()
 
         loss = output_dict["loss"]
         loss_lm = output_dict["loss_lm"]
@@ -252,21 +264,21 @@ def train(
                     writer.add_scalar("train/lr", curr_lr[0], step)
         # store images
         pred_masks = output_dict["pred_masks"]
-        masks_list = input_dict["masks_seq"]
         pred_boxes = output_dict["pred_boxes"]
         target_boxes = input_dict["boxes_seq"]
-        masks_list = torch.cat(
-            [torch.cat([torch.cat([masks for masks in masks_seq]) for masks_seq in masks_seqs]) for masks_seqs in
-             masks_list]).cuda()
         target_boxes = torch.tensor(target_boxes).cuda().reshape(-1, 4)
         if torch.distributed.is_initialized():
             if torch.distributed.get_rank() == 0:
-                plot_images(masks_list[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                            pred_masks[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                            target_boxes[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                            pred_boxes[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                            save_path=os.path.join(args.output_dir, "images_train"),
-                            imgid=f"epoch{epoch}-iter{step}")
+                for k, (mask_gt, mask_pred, mask_pred_gt, box_gt, box_pred) in enumerate(zip(masks_list, pred_masks, mask_decode_gt, target_boxes, pred_boxes)):
+                    if k > 1:
+                        break
+                    plot_images(mask_gt.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                mask_pred.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                box_gt.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                box_pred.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                mask_pred_gt=mask_pred_gt.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                save_path=os.path.join(args.output_dir, "images_train"),
+                                imgid=f"epoch{epoch}-iter{step}-{k}")
 
 
 def validate(val_loader, model_engine, epoch, writer, args):
@@ -275,8 +287,13 @@ def validate(val_loader, model_engine, epoch, writer, args):
     acc_iou_meter = AverageMeter("gIoU", ":6.3f", Summary.SUM)
     boxes_iou_meter = AverageMeter("boxIoU", ":6.3f")
     boxes_acc_meter = AverageMeter("boxAcc", ":6.3f")
-
+    if torch.distributed.is_initialized():
+        autoencoder = model_engine.module.autoencoder
+    else:
+        autoencoder = model_engine.autoencoder
     model_engine.eval()
+    autoencoder.train()
+    # model_engine.train()
     with torch.no_grad():
         dtype = torch.float32
         if args.fp16:
@@ -287,18 +304,20 @@ def validate(val_loader, model_engine, epoch, writer, args):
             input_dict = dict_to_cuda(input_dict)
             with torch.cuda.amp.autocast(dtype=dtype):
                 output_dict = model_engine(**input_dict)
+                masks_list = input_dict["masks_seq"]
+                masks_list = torch.cat(
+                    [torch.cat([torch.cat([masks for masks in masks_seq]) for masks_seq in masks_seqs]) for masks_seqs in
+                     masks_list]).cuda()
+                masks_list = (masks_list > 0.5).float()
+                mask_decode_gt = autoencoder(masks_list.unsqueeze(dim=1)).sigmoid()
             # evaluate mask
             pred_masks = output_dict["pred_masks"]
-            masks_list = input_dict["masks_seq"]
             pred_boxes = output_dict["pred_boxes"]
             target_boxes = input_dict["boxes_seq"]
-            masks_list = torch.cat(
-                [torch.cat([torch.cat([masks for masks in masks_seq]) for masks_seq in masks_seqs]) for masks_seqs in
-                 masks_list]).cuda()
             target_boxes = torch.tensor(target_boxes).cuda().reshape(-1, 4)
-            output_list = (pred_masks > 0).float().squeeze()
+            output_list = (pred_masks > 0.5).float().squeeze()
             intersection, union, acc_iou = 0.0, 0.0, 0.0
-            for mask_i, output_i in zip(masks_list, output_list):
+            for mask_i, output_i in zip((masks_list>0.5).int(), output_list.int()):
                 intersection_i, union_i, _ = intersectionAndUnionGPU(
                     output_i.contiguous().clone(), mask_i.contiguous(), 2, ignore_index=255
                 )
@@ -323,13 +342,17 @@ def validate(val_loader, model_engine, epoch, writer, args):
             boxes_iou_meter.update(box_iou, n=target_boxes.shape[0]), boxes_acc_meter.update(correct_rate,
                                                                                              n=target_boxes.shape[0])
             if torch.distributed.is_initialized():
-                if torch.distributed.getsave_steps_rank() == 0:
-                    plot_images(masks_list[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                                pred_masks[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                                target_boxes[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                                pred_boxes[0].to(torch.float32).squeeze().detach().cpu().numpy(),
-                                save_path=os.path.join(args.output_dir, "images_val"),
-                                imgid=f"epoch{epoch}-iter{i}")
+                if torch.distributed.get_rank() == 0:
+                    for k, (mask_gt, mask_pred, mask_pred_gt, box_gt, box_pred) in enumerate(zip(masks_list, output_list, mask_decode_gt, target_boxes, pred_boxes)):
+                        if k > 1:
+                            break
+                        plot_images(mask_gt.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                    mask_pred.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                    box_gt.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                    box_pred.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                    mask_pred_gt=mask_pred_gt.to(torch.float32).squeeze().detach().cpu().numpy(),
+                                    save_path=os.path.join(args.output_dir, "images_val"),
+                                    imgid=f"epoch{epoch}-iter{i}-{k}")
     intersection_meter.all_reduce()
     union_meter.all_reduce()
     acc_iou_meter.all_reduce()
@@ -351,7 +374,7 @@ def validate(val_loader, model_engine, epoch, writer, args):
 
     return giou, ciou, boxiou, boxacc
 
-
+curr_global_steps = 0
 def main():
     cfg, training_args = prepare_args()
     if training_args.local_rank == 0:
@@ -360,6 +383,7 @@ def main():
     else:
         writer = None
     model, preprocessor = load_pretrained(cfg.model_args, training_args)
+    tokenizer = preprocessor["text"]
     world_size = torch.cuda.device_count()
     distributed = world_size > 1
     training_args.distributed = distributed
@@ -372,14 +396,22 @@ def main():
     trainer_cls, data_collator_dict = prepare_trainer_collator(cfg.model_args, preprocessor, collator_kwargs)
     dataset, compute_metrics = prepare_data(cfg.data_args, cfg.model_args, training_args, preprocessor)
     train_dataset, val_dataset = dataset['train'], dataset['validation']
-    total_global_steps = training_args.num_train_epochs * len(train_dataset) // (
-                training_args.per_device_train_batch_size * world_size)
-    steps_per_epoch = len(train_dataset) // (training_args.per_device_train_batch_size * world_size)
-    print(
-        f"Total epochs: {training_args.num_train_epochs}; global steps: {total_global_steps}; steps_per_epoch {steps_per_epoch}")
+    total_global_steps = 200
+    if training_args.do_train:
+        total_global_steps = training_args.num_train_epochs * len(train_dataset) // (
+                    training_args.per_device_train_batch_size * world_size)
+        steps_per_epoch = len(train_dataset) // (training_args.per_device_train_batch_size * world_size)
+        print(
+            f"Total epochs: {training_args.num_train_epochs}; global steps: {total_global_steps}; steps_per_epoch {steps_per_epoch}")
     if training_args.deepspeed:
         # with open(training_args.deepspeed, "r") as f:
         #     ds_config = json.load(f)
+        # ds_config["train_micro_batch_size_per_gpu"] = training_args.per_device_train_batch_size
+        # ds_config["optimizer"]["lr"] = training_args.learning_rate
+        # ds_config["optimizer"]["params"]["betas"] = (0.9, 0.95)
+        # ds_config["optimizer"]["params"]["weight_decay"] = 0.0
+        # ds_config["scheduler"]["params"]["total_num_steps"] = total_global_steps
+        # ds_config["scheduler"]["params"]["warmup_max_lr"] = training_args.learning_rate
         ds_config = {
             "train_micro_batch_size_per_gpu": training_args.per_device_train_batch_size,
             "gradient_accumulation_steps": 1,
@@ -397,7 +429,7 @@ def main():
                     "total_num_steps": total_global_steps,
                     "warmup_min_lr": 0,
                     "warmup_max_lr": training_args.learning_rate,
-                    "warmup_num_steps": 100,
+                    "warmup_num_steps": min(100, total_global_steps),
                     "warmup_type": "linear",
                 },
             },
@@ -459,27 +491,28 @@ def main():
             collate_fn=data_collator_dict["eval_collator"],
         )
 
-    train_iter = iter(train_loader)
-    best_score, cur_ciou, curr_global_step = 0.0, 0.0, 0
+    best_score, cur_ciou = 0.0, 0.0
     start_time = time.time()
     # if training_args.eval_only:
     #     giou, ciou = validate(val_loader, model_engine, 0, writer, training_args)
     #     exit()
     for epoch in range(0, training_args.num_train_epochs):
         # train for one epoch
-        train(
-            train_loader,
-            model_engine,
-            epoch,
-            scheduler,
-            writer,
-            training_args,
-            optimizer,
-            training_args.num_train_epochs,
-            total_global_steps,
-            curr_global_step,
-            start_time
-        )
+        if training_args.do_train:
+            train(
+                train_loader,
+                model_engine,
+                epoch,
+                scheduler,
+                writer,
+                training_args,
+                optimizer,
+                training_args.num_train_epochs,
+                total_global_steps,
+                start_time
+            )
+
+        is_best = True
 
         if training_args.do_eval:
             giou, ciou, boxiou, boxacc = validate(val_loader, model_engine, epoch, writer, training_args)
@@ -487,7 +520,8 @@ def main():
             best_score = max(giou, best_score)
             cur_ciou = ciou if is_best else cur_ciou
 
-        if (not training_args.do_eval or is_best) and (curr_global_step + 1) % training_args.save_steps == 0:
+        # if training_args.do_train and (not training_args.do_eval or is_best) and (curr_global_steps + 1) % training_args.save_steps == 0:
+        if training_args.do_train and is_best:
             save_dir = os.path.join(training_args.output_dir, "ckpt_model")
             if training_args.local_rank == 0:
                 torch.save(
@@ -504,6 +538,8 @@ def main():
             torch.distributed.barrier()
             lean_state_dict = clone_tensors_for_torch_save(model_engine.module.state_dict())
             model_engine.module.save_pretrained(save_dir, state_dict=lean_state_dict)
+            tokenizer.save_pretrained(save_dir)
+            print(f"param sum {sum([p.sum() for p in model_engine.module.parameters()])}")
             # model_engine.save_checkpoint(save_dir)
 
 

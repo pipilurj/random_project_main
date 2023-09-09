@@ -1,0 +1,30 @@
+{
+  "_name_or_path": "/home/pirenjie/pretrained_weights/llava_7b",
+  "architectures": [
+    "ShikraLlamaForCausalLMMask"
+  ],
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "freeze_mm_mlp_adapter": false,
+  "hidden_act": "silu",
+  "hidden_size": 4096,
+  "initializer_range": 0.02,
+  "intermediate_size": 11008,
+  "max_sequence_length": 2048,
+  "mm_hidden_size": 1024,
+  "mm_use_im_start_end": true,
+  "mm_vision_select_layer": -2,
+  "mm_vision_tower": "/home/pirenjie/.cache/huggingface/hub/models--openai--clip-vit-large-patch14/snapshots/8d052a0f05efbaefbc9e8786ba291cfdf93e5bff",
+  "model_type": "shikra",
+  "num_attention_heads": 32,
+  "num_hidden_layers": 32,
+  "pad_token_id": -1,
+  "rms_norm_eps": 1e-06,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.28.0.dev0",
+  "tune_mm_mlp_adapter": false,
+  "use_cache": false,
+  "use_mm_proj": true,
+  "vocab_size": 32010
+}

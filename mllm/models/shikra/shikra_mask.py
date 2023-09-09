@@ -9,7 +9,8 @@ from transformers import LlamaConfig, LlamaModel, LlamaForCausalLM, CLIPVisionMo
 import torch.nn.functional as F
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from mllm.models.utils.modeling_outputs import CausalLMOutputWithPastCustom, GreedySearchDecoderOnlyOutputCustom
-from mllm.models.autoencoder.model.resnet import ResNet50
+# from mllm.models.autoencoder.model.resnet import ResNet50
+from mllm.models.autoencoder.model.resnet_layernorm import ResNet50
 from mllm.utils.dice_loss import dice_loss
 from transformers.generation.logits_process import (
     LogitsProcessorList,
@@ -272,10 +273,6 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
         self.obj_visual_end_id = tokenizer.encode(OBJ_VISUAL_END, add_special_tokens=False)[0]
         self.model.mask_token_ids = self.mask_token_ids
 
-    def set_image_dir(self, output_dir):
-        self.img_dir = os.path.join(output_dir, "images")
-        os.makedirs(self.img_dir, exist_ok=True)
-
     def init_autoencoder(self):
         self.autoencoder = ResNet50()
         self.decoder_mapping = nn.Linear(4096, 4096)
@@ -422,7 +419,7 @@ class ShikraLlamaForCausalLMMask(LlamaForCausalLM):
             loss_l2=l2_loss,
             loss_recon=recon_loss,
             loss_bbox=box_loss,
-            pred_masks=mask_decoded,
+            pred_masks=mask_decoded.sigmoid(),
             pred_boxes=box_pred,
             # loss_iou=iou_loss,
             logits=logits,

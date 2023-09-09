@@ -30,10 +30,12 @@ data_args = dict(
     ),
 )
 training_args = dict(
-    save_steps=50,
-    num_train_epochs=1000,
+    # do_train=True,
+    do_train=False,
+    save_steps=1,
+    num_train_epochs=1,
     do_eval=True,
-    eval_steps=50,
+    eval_steps=1,
     logging_steps=1,
     per_device_train_batch_size=8,
     lora_enable=False,
@@ -45,9 +47,9 @@ model_args = dict(
     conv_args=dict(
         tokenize_kwargs=dict(truncation_size=4096),
     ),
-    model_name_or_path="/home/pirenjie/pretrained_weights/llava_7b",
-    # model_name_or_path="/home/pirenjie/shikra/exp/shikra3/shikra3_rec3_mask_box_cls_overfit_withva13/ckpt_model",
-    # model_name_or_path="/home/pirenjie/shikra/exp/shikra3/shikra3_rec3_mask_box_cls_overfit_withva14",
+    # model_name_or_path="/home/pirenjie/pretrained_weights/llava_7b",
+    # model_name_or_path="/home/pirenjie/shikra/exp/shikra3/loadparamcheck/ckpt_model",
+    model_name_or_path="/home/pirenjie/shikra/exp/shikra3/shikra3_rec3_mask_box_cls_overfit_withval/ckpt_model",
     target_processor=dict(
         boxes=dict(type='BoxMaskFormatter'),
     ),
@@ -56,7 +58,7 @@ model_args = dict(
     lora_alpha = 32,
     lora_dropout = 0.1,
     freeze_autoencoder=False,
-    pretrained_autoencoder = "/home/pirenjie/transformer-master/saved/pixelmask_resnet_dist0.0_noise0._triplet0-model.pt",
+    pretrained_autoencoder = None,
     lm_loss_weight = 1.,
     recon_loss_weight = 1.,
     box_loss_weight = 1.,

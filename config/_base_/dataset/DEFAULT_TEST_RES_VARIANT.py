@@ -1,6 +1,6 @@
 RES_TEST_COMMON_CFG = dict(
     type='REFMaskDataset',
-    template_file=r'{{fileDirname}}/template/REC_img_exp.json',
+    template_file=r'{{fileDirname}}/template/RES.json',
     # image_folder=r'zz1424:s3://visual_grounding/academic_data/refer/images/mscoco/images/train2014/',
     image_folder='/home/pirenjie/data/refcoco/images/train2014',
     max_dynamic_size=None,
@@ -16,7 +16,6 @@ DEFAULT_TEST_RES_VARIANT = dict(
         type='RESDataset',
         template_file=r'{{fileDirname}}/template/RES_img_exp.json',
         # image_folder=r'zz1424:s3://visual_grounding/academic_data/refer/images/mscoco/images/train2014/',
-        image_folder='/home/pirenjie/data/refcoco/images/train2014',
         max_dynamic_size=None,
         filename=r'{{fileDirname}}/../../../data/RES_refcocog_umd_test_subset.jsonl',
     ),

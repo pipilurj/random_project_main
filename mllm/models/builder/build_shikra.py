@@ -176,7 +176,6 @@ def load_pretrained_shikra(model_args, training_args) -> Tuple[nn.Module, PREPRO
     )
     # model.resize_token_embeddings(len(tokenizer))
     model.record_loc_token_id(tokenizer)
-    model.set_image_dir(training_args.output_dir)
     if model_args.lora_enable:
         print(f"lora enable")
         if hasattr(model, "enable_input_require_grads"):
